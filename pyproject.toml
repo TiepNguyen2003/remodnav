@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "remodnav"
+description = "robust eye movement detection for natural viewing"
+readme = "README.md"
+requires-python = ">=3.7"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    {name = "The REMoDNaV Team and Contributors", email = "michael.hanke@gmail.com"},
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "statsmodels",
+    "matplotlib",
+]
+dynamic = ["version"]
+
+# Not installed by `pip install remodnav` -- opt in with `pip install -e ".[test]"`
+[project.optional-dependencies]
+# unit tests that need no external data
+test = [
+    "pytest",
+    "pytest-cov",
+]
+# full suite: adds the datalad-managed test data submodules
+devel = [
+    "pytest",
+    "pytest-cov",
+    "datalad",
+]
+
+[project.urls]
+Homepage = "https://github.com/psychoinformatics-de/remodnav"
+
+[project.scripts]
+remodnav = "remodnav:main"
+
+# version is read statically from remodnav/__init__.py, no import required
+[tool.setuptools.dynamic]
+version = {attr = "remodnav.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["remodnav*"]
+exclude = ["remodnav.tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["remodnav"]

@@ -8,21 +8,19 @@ MODULE ?= remodnav
 all: clean test
 
 clean:
-	$(PYTHON) setup.py clean
-	#rm -rf dist build bin docs/build docs/source/generated
+	-rm -rf dist build bin *.egg-info
 	-find . -name '*.pyc' -delete
 	-find . -name '__pycache__' -type d -delete
 
-bin:
-	mkdir -p $@
-	PYTHONPATH=bin:$(PYTHONPATH) python setup.py develop --install-dir $@
+develop:
+	$(PYTHON) -m pip install -e .
 
-test-code: bin
-	PATH=bin:$(PATH) PYTHONPATH=bin:$(PYTHONPATH) $(PYTHON) -m pytest -s -v $(MODULE)
+test-code: develop
+	$(PYTHON) -m pytest -s -v $(MODULE)
 
-test-coverage:
+test-coverage: develop
 	rm -rf coverage .coverage
-	PATH=bin:$(PATH) PYTHONPATH=bin:$(PYTHONPATH) $(PYTHON) -m pytest -s -v --cov=remodnav --cov-report=term-missing $(MODULE)
+	$(PYTHON) -m pytest -s -v --cov=remodnav --cov-report=term-missing $(MODULE)
 
 test: test-code
 
@@ -41,6 +39,5 @@ code-analysis:
 release-pypi: # update-changelog
 	# better safe than sorry
 	test ! -e dist
-	python setup.py sdist
-	python setup.py bdist_wheel --universal
+	$(PYTHON) -m build
 	twine upload dist/*
