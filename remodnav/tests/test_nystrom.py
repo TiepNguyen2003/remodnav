@@ -21,9 +21,13 @@ def _test_target_data():
         3: 'PSO',
     }
     clf = d.EyegazeClassifier(**common_args)
-    data = np.recfromcsv(
+    data = np.genfromtxt(
         'inputs/nystrom_target/1_2.csv',
-        usecols=[1, 2, 3, 4])
+        delimiter=',',
+        names=True,
+        dtype=None,
+        usecols=[1, 2, 3, 4],
+        case_sensitive='lower').view(np.recarray)
     events = []
     ev_type = None
     ev_start = None
@@ -61,9 +65,13 @@ def _test_target_data():
     pl.show()
 
 def _test_real_data():
-    data = np.recfromcsv(
+    data = np.genfromtxt(
         'inputs/event_detector_1.1/1_2.csv',
-        usecols=[0, 1])
+        delimiter=',',
+        names=True,
+        dtype=None,
+        usecols=[0, 1],
+        case_sensitive='lower').view(np.recarray)
     # when both coords are zero -> missing data
     data[np.logical_and(data['x'] == 0, data['y'] == 0)] = (np.nan, np.nan)
 
