@@ -7,10 +7,13 @@
 #   copyright and license terms.
 #
 # ## ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ##
+import contextlib
 import numpy as np
+import numpy.typing as npt
 from statsmodels.robust.scale import mad
 from scipy import signal
 from scipy import ndimage
+import scipy.linalg
 from scipy.signal import savgol_filter
 from scipy.ndimage import median_filter
 from math import (
@@ -20,6 +23,64 @@ from math import (
 
 import logging
 lgr = logging.getLogger('remodnav.clf')
+
+
+@contextlib.contextmanager
+def lstsq_without_finite_check():
+    """Restore pre-scipy-1.17 NaN propagation through `savgol_filter`
+
+    With the default `mode='interp'`, `savgol_filter` fits a polynomial to
+    the first and last `window_length` samples. Up to scipy 1.16 that fit ran
+    through `numpy.polyfit`, which performed no input validation and returned
+    NaN coefficients for a window containing NaN -- the NaNs we use to mark
+    signal loss simply propagated into the output. scipy 1.17 rerouted the fit
+    through `scipy.linalg.lstsq`, whose `check_finite=True` default rejects
+    them with "array must not contain infs or NaNs".
+
+    `scipy.signal._polyutils._lstsq` imports `lstsq` at call time, so
+    rebinding it on the module is picked up. The patch is process-global while
+    active, hence the narrow scope -- do not apply it at module level.
+
+    See `remodnav/tests/test_preproc.py::test_savgol_nan_propagation`, which
+    fails if a future scipy stops honouring this.
+    """
+    orig = scipy.linalg.lstsq
+
+    def patched(a, b, *args, **kwargs):
+        kwargs['check_finite'] = False
+        return orig(a, b, *args, **kwargs)
+
+    scipy.linalg.lstsq = patched
+    try:
+        yield
+    finally:
+        scipy.linalg.lstsq = orig
+
+
+# Minimal dtype of the raw gaze samples accepted by
+# `EyegazeClassifier.preproc()`. Inputs may carry further fields (e.g. pupil
+# size, frame number); those are passed over.
+GAZE_DTYPE = np.dtype([
+    ('x', np.float64),
+    ('y', np.float64),
+])
+
+# Exact dtype of the record array returned by `EyegazeClassifier.preproc()`,
+# and expected as input by `EyegazeClassifier.__call__()`.
+PREPROC_DTYPE = np.dtype([
+    ('med_vel', np.float64),
+    ('vel', np.float64),
+    ('accel', np.float64),
+    ('x', np.float64),
+    ('y', np.float64),
+])
+
+# Static type aliases for the arrays described by the dtypes above. Structured
+# arrays carry `np.void` as their scalar type -- the type system cannot express
+# individual field names, so these aliases only assert "structured array"; the
+# dtypes above are the actual specification.
+GazeArray = npt.NDArray[np.void]
+PreprocArray = np.recarray
 
 
 def deg_per_pixel(screen_size, viewing_distance, screen_resolution):
@@ -791,16 +852,23 @@ class EyegazeClassifier(object):
 
     def preproc(
             self,
-            data,
-            min_blink_duration=0.02,
-            dilate_nan=0.01,
-            median_filter_length=0.05,
-            savgol_length=0.019,
-            savgol_polyord=2,
-            max_vel=1000.0):
+            data: GazeArray,
+            min_blink_duration: float = 0.02,
+            dilate_nan: float = 0.01,
+            median_filter_length: float = 0.05,
+            savgol_length: float = 0.019,
+            savgol_polyord: int = 2,
+            max_vel: float = 1000.0) -> PreprocArray:
         """
         Parameters
         ----------
+        data : GazeArray
+          Structured (record) array with one entry per gaze sample, holding at
+          least the fields of `GAZE_DTYPE`: `x` and `y`, the gaze coordinates
+          in pixels. Missing data (e.g. blinks) must be marked with NaN. Any
+          additional fields are ignored. The array is modified in-place (spike
+          filtering, NaN dilation, smoothing), so pass a copy if the original
+          data is still needed.
         min_blink_duration : float
           In seconds. Any signal loss shorter than this duration will not be
           considered for `dilate_nan`.
@@ -818,6 +886,13 @@ class EyegazeClassifier(object):
           threshold will be replaced by the previous velocity value.
           Additionally a warning will be issued to indicate a potentially
           inappropriate filter setup.
+
+        Returns
+        -------
+        PreprocArray
+          Record array of the same length as `data`, with the fields of
+          `PREPROC_DTYPE`: `med_vel`, `vel`, `accel`, `x`, and `y`. This is
+          the input expected by `EyegazeClassifier.__call__()`.
         """
         # convert params in seconds to #samples
         dilate_nan = int(dilate_nan * self.sr)
@@ -860,11 +935,14 @@ class EyegazeClassifier(object):
                 'Smooth coordinates with Savitzy-Golay filter (len=%i, ord=%i)',
                 savgol_length, savgol_polyord)
             for i in ('x', 'y'):
-                data[i] = savgol_filter(data[i], savgol_length, savgol_polyord)
+                with lstsq_without_finite_check():
+                    data[i] = savgol_filter(
+                        data[i], savgol_length, savgol_polyord)
 
         # velocity calculation, exclude velocities over `max_vel`
         # no entry for first datapoint!
         velocities = self._get_velocities(data)
+        med_velocities = None
 
         if median_filter_length:
             lgr.info(
@@ -896,7 +974,8 @@ class EyegazeClassifier(object):
                 vel = filtered_velocities[-1]
             filtered_velocities.append(vel)
         velocities = np.array(filtered_velocities)
-        if not median_filter_length:
+
+        if med_velocities is None:
             # no median filtering, but we need the field in our dict later,
             # so we just reuse the original velocities
             med_velocities = velocities
@@ -904,15 +983,16 @@ class EyegazeClassifier(object):
         acceleration = np.zeros(velocities.shape, velocities.dtype)
         acceleration[1:] = (velocities[1:] - velocities[:-1]) * self.sr
 
-        arrs = [med_velocities]
-        names = ['med_vel']
-        arrs.extend([
-            velocities,
-            acceleration,
-            data['x'],
-            data['y']])
-        names.extend(['vel', 'accel', 'x', 'y'])
-        return np.core.records.fromarrays(arrs, names=names)
+        # field order must match PREPROC_DTYPE
+        return np.rec.fromarrays(
+            [
+                med_velocities,
+                velocities,
+                acceleration,
+                data['x'],
+                data['y'],
+            ],
+            dtype=PREPROC_DTYPE)
 
     def show_gaze(self, data=None, pp=None, events=None, show_vels=True):
         colors = {
