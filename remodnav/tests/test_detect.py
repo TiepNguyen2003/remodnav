@@ -90,10 +90,12 @@ def test_too_long_pso():
 ])
 def test_real_data(infile):
     dl.get(infile)
-    data = np.recfromcsv(
+    data = np.genfromtxt(
         infile,
         delimiter='\t',
-        names=['x', 'y', 'pupil', 'frame'])
+        names=['x', 'y', 'pupil', 'frame'],
+        dtype=None,
+        case_sensitive='lower').view(np.recarray)
 
     clf = d.EyegazeClassifier(
         #px2deg=0.0185581232561,

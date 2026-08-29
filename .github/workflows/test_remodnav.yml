@@ -24,7 +24,7 @@ jobs:
       shell: bash
       run: |
         pip install -r requirements-devel.txt
-        python setup.py build
+        python -m pip wheel --no-deps -w dist .
         pip install -e .
     - name: WTF
       shell: bash

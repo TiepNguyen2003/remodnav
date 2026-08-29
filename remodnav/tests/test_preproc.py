@@ -1,4 +1,6 @@
 import numpy as np
+import pytest
+import scipy.linalg
 from . import utils as ut
 from .. import clf as d
 
@@ -14,6 +16,30 @@ def test_px2deg():
         d.deg_per_pixel(26.5, 63, 1280) -
         # value from paper
         0.0185546875) < 0.0001
+
+
+def test_savgol_nan_propagation():
+    # scipy >= 1.17 rejects NaN in the edge windows that `mode='interp'`
+    # polynomial-fits; `lstsq_without_finite_check` restores the propagation
+    # behaviour of scipy <= 1.16, which the expected NaN counts in
+    # `test_preproc` depend on. Fails if a future scipy stops honouring it.
+    from scipy.signal import savgol_filter
+    samp = np.arange(9, dtype=float)
+    # NaN inside the leading window_length=5 edge window
+    samp[2] = np.nan
+    unpatched = scipy.linalg.lstsq
+    with d.lstsq_without_finite_check():
+        p = savgol_filter(samp, 5, 1)
+    assert np.array_equal(
+        np.isnan(p),
+        [True] * 5 + [False] * 4)
+    # the NaN-free tail is untouched (a linear ramp is reproduced exactly by
+    # a polyorder=1 fit, up to convolution rounding)
+    assert np.allclose(p[5:], samp[5:])
+    # the patch is undone on exit, and does not leak into other callers
+    assert scipy.linalg.lstsq is unpatched
+    with pytest.raises(ValueError):
+        savgol_filter(samp, 5, 1)
 
 
 def test_spike_filter():
@@ -78,6 +104,8 @@ def test_preproc():
 
     samp = [0.0, 2.0]
     data = ut.expand_samp(samp, y=0.0)
+    # a fresh sample has no NaNs in any of its float fields
+    assert not any(np.isnan(data[f]).any() for f in ('x', 'y', 'pupil'))
     clf = d.EyegazeClassifier(px2deg=1.0, sampling_rate=10.0)
     p = clf.preproc(
         data.copy(), savgol_length=0, dilate_nan=0,

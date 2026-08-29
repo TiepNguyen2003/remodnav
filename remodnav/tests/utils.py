@@ -59,7 +59,7 @@ def mk_gaze_sample(
 
 def expand_samp(samp, y=1000.0):
     n = len(samp)
-    return np.core.records.fromarrays([
+    return np.rec.fromarrays([
         samp,
         [y] * n,
         [0.0] * n,

@@ -135,8 +135,8 @@ before_build:
 
 
 build_script:
-  # Verify that setup.py build doesn't puke
-  - python setup.py build
+  # Verify that the package builds
+  - python -m pip wheel --no-deps -w dist .
   # Test installation system-wide
   - pip install -e .
 
